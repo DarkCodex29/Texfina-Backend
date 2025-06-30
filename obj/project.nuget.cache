@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "Wg3O4SOjq1k=",
+  "dgSpecHash": "QX2SYjdq12o=",
   "success": true,
-  "projectFilePath": "C:\\Users\\gianx\\Desktop\\TexfinaBackend\\Texfina Api\\TexfinaApi.csproj",
+  "projectFilePath": "C:\\Users\\gianx\\Desktop\\DevTexfina\\Texfina Api\\TexfinaApi.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\gianx\\.nuget\\packages\\azure.core\\1.25.0\\azure.core.1.25.0.nupkg.sha512",
     "C:\\Users\\gianx\\.nuget\\packages\\azure.identity\\1.7.0\\azure.identity.1.7.0.nupkg.sha512",

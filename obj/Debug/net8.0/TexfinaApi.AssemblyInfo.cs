@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TexfinaApi")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d1fc912f5d079f66dbaf72df40248bebdae8fc3c")]
 [assembly: System.Reflection.AssemblyProductAttribute("TexfinaApi")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TexfinaApi")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
