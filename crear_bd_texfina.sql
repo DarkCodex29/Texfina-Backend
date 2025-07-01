@@ -201,7 +201,9 @@ INSERT INTO ROL (id_rol, nombre, descripcion) VALUES
 ('ADMIN', 'Administrador', 'Acceso completo al sistema'),
 ('SUPERVISOR', 'Supervisor', 'Supervisión de operaciones'),
 ('OPERARIO', 'Operario', 'Operaciones básicas de insumos'),
-('CONSULTOR', 'Consultor', 'Solo consulta de información');
+('CONSULTOR', 'Consultor', 'Solo consulta de información'),
+('LABORATORISTA', 'Laboratorista', 'Aprobación de lotes y calidad'),
+('COMERCIAL', 'Comercial', 'Gestión de precios y cotizaciones');
 
 -- Insertar tipos de usuario
 INSERT INTO TIPO_USUARIO (descripcion, requiere_cierre_automatico) VALUES 
@@ -231,6 +233,8 @@ INSERT INTO PERMISO (nombre, descripcion) VALUES
 ('LOTES_EDITAR', 'Editar lotes'),
 ('LOTES_ELIMINAR', 'Eliminar lotes'),
 ('LOTES_CONSULTAR', 'Consultar lotes'),
+('LOTES_APROBAR', 'Aprobar lotes'),
+('PRECIOS_ASIGNAR', 'Asignar precios a lotes'),
 ('INGRESOS_CREAR', 'Registrar ingresos'),
 ('INGRESOS_EDITAR', 'Editar ingresos'),
 ('INGRESOS_CONSULTAR', 'Consultar ingresos'),
@@ -255,6 +259,24 @@ INSERT INTO ROL_PERMISO (id_rol, id_permiso)
 SELECT 'SUPERVISOR', id_permiso 
 FROM PERMISO 
 WHERE nombre NOT IN ('USUARIOS_CREAR', 'USUARIOS_ELIMINAR', 'CONFIGURACION');
+
+-- Asignar permisos específicos al rol LABORATORISTA
+INSERT INTO ROL_PERMISO (id_rol, id_permiso)
+SELECT 'LABORATORISTA', id_permiso 
+FROM PERMISO 
+WHERE nombre IN (
+    'LOTES_CONSULTAR', 'LOTES_APROBAR', 'INSUMOS_CONSULTAR', 
+    'STOCK_CONSULTAR', 'REPORTES_GENERAR'
+);
+
+-- Asignar permisos específicos al rol COMERCIAL
+INSERT INTO ROL_PERMISO (id_rol, id_permiso)
+SELECT 'COMERCIAL', id_permiso 
+FROM PERMISO 
+WHERE nombre IN (
+    'LOTES_CONSULTAR', 'PRECIOS_ASIGNAR', 'PROVEEDORES_CONSULTAR',
+    'INSUMOS_CONSULTAR', 'REPORTES_GENERAR'
+);
 
 -- Asignar permisos básicos al rol OPERARIO
 INSERT INTO ROL_PERMISO (id_rol, id_permiso)
@@ -312,4 +334,215 @@ INSERT INTO ALMACEN (nombre, ubicacion) VALUES
 ('Almacén de Materia Prima', 'Planta - Área D'),
 ('Almacén de Acabados', 'Planta - Área E');
 
+-- ========================================
+-- SISTEMA DE AUTOMATIZACIÓN DE STOCK
+-- ========================================
+
+-- Tabla para tareas pendientes por rol
+CREATE TABLE TAREA_PENDIENTE (
+    id_tarea INT IDENTITY(1,1) PRIMARY KEY,
+    tipo_tarea NVARCHAR(50) NOT NULL, -- 'APROBAR_LOTE', 'ASIGNAR_PRECIO'
+    id_entidad INT NOT NULL, -- ID del lote, insumo, etc.
+    tabla_entidad NVARCHAR(50) NOT NULL, -- 'LOTE', 'INSUMO'
+    id_rol_asignado NVARCHAR(50) REFERENCES ROL(id_rol),
+    estado NVARCHAR(50) DEFAULT 'PENDIENTE', -- 'PENDIENTE', 'COMPLETADA', 'CANCELADA'
+    prioridad INT DEFAULT 1,
+    created_at DATETIME2 DEFAULT GETDATE(),
+    completed_at DATETIME2,
+    descripcion NVARCHAR(500),
+    created_by INT REFERENCES USUARIO(id_usuario)
+);
+
+-- Tabla para notificaciones de usuarios
+CREATE TABLE NOTIFICACION (
+    id_notificacion INT IDENTITY(1,1) PRIMARY KEY,
+    id_usuario INT REFERENCES USUARIO(id_usuario),
+    id_tarea INT REFERENCES TAREA_PENDIENTE(id_tarea),
+    mensaje NVARCHAR(500),
+    leida BIT DEFAULT 0,
+    created_at DATETIME2 DEFAULT GETDATE()
+);
+
+-- ========================================
+-- TRIGGERS PARA AUTOMATIZACIÓN DE STOCK
+-- ========================================
+
+-- Trigger: Actualizar stock_actual cuando se registra un CONSUMO
+CREATE TRIGGER TR_ActualizarStockConsumo
+ON CONSUMO
+AFTER INSERT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    UPDATE LOTE 
+    SET stock_actual = stock_actual - i.cantidad
+    FROM LOTE l
+    INNER JOIN inserted i ON l.id_lote = i.id_lote;
+    
+    -- Verificar si el lote quedó en stock bajo
+    INSERT INTO TAREA_PENDIENTE (tipo_tarea, id_entidad, tabla_entidad, id_rol_asignado, descripcion)
+    SELECT 
+        'STOCK_BAJO',
+        l.id_lote,
+        'LOTE',
+        'SUPERVISOR',
+        'Lote ' + l.lote + ' tiene stock bajo: ' + CAST(l.stock_actual AS NVARCHAR(20))
+    FROM LOTE l
+    INNER JOIN inserted i ON l.id_lote = i.id_lote
+    WHERE l.stock_actual <= (l.stock_inicial * 0.1); -- 10% del stock inicial
+END;
+
+-- Trigger: Crear tareas pendientes cuando se crea un LOTE
+CREATE TRIGGER TR_CrearTareasPendientesLote
+ON LOTE
+AFTER INSERT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    -- Crear tarea para asignar precio si no tiene
+    INSERT INTO TAREA_PENDIENTE (tipo_tarea, id_entidad, tabla_entidad, id_rol_asignado, descripcion)
+    SELECT 
+        'ASIGNAR_PRECIO',
+        i.id_lote,
+        'LOTE',
+        'COMERCIAL',
+        'Asignar precio al lote: ' + i.lote
+    FROM inserted i
+    WHERE i.precio_total IS NULL;
+    
+    -- Crear tarea para aprobar lote
+    INSERT INTO TAREA_PENDIENTE (tipo_tarea, id_entidad, tabla_entidad, id_rol_asignado, descripcion)
+    SELECT 
+        'APROBAR_LOTE',
+        i.id_lote,
+        'LOTE',
+        'LABORATORISTA',
+        'Aprobar calidad del lote: ' + i.lote
+    FROM inserted i
+    WHERE i.estado_lote = 'PENDIENTE_APROBACION' OR i.estado_lote IS NULL;
+END;
+
+-- Trigger: Actualizar stock_actual cuando se registra un INGRESO
+CREATE TRIGGER TR_ActualizarStockIngreso
+ON INGRESO
+AFTER INSERT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    UPDATE LOTE 
+    SET stock_actual = stock_actual + i.cantidad
+    FROM LOTE l
+    INNER JOIN inserted i ON l.id_lote = i.id_lote;
+END;
+
+-- ========================================
+-- VISTAS PARA CONSULTAS OPTIMIZADAS
+-- ========================================
+
+-- Vista: Stock actual por insumo consolidado
+CREATE VIEW VW_StockActual AS
+SELECT 
+    i.id_insumo,
+    i.nombre as insumo,
+    i.id_fox,
+    c.familia,
+    c.sub_familia,
+    u.nombre as unidad,
+    SUM(l.stock_actual) as stock_total,
+    COUNT(l.id_lote) as cantidad_lotes,
+    MIN(l.fecha_expiracion) as proxima_expiracion,
+    AVG(CASE WHEN l.precio_total IS NOT NULL AND l.stock_inicial > 0 
+             THEN l.precio_total / l.stock_inicial 
+             ELSE NULL END) as precio_unitario_promedio
+FROM INSUMO i
+LEFT JOIN LOTE l ON i.id_insumo = l.id_insumo AND l.stock_actual > 0
+LEFT JOIN CLASE c ON i.id_clase = c.id_clase
+LEFT JOIN UNIDAD u ON i.id_unidad = u.id_unidad
+GROUP BY i.id_insumo, i.nombre, i.id_fox, c.familia, c.sub_familia, u.nombre;
+
+-- Vista: Tareas pendientes por usuario
+CREATE VIEW VW_TareasPendientesPorUsuario AS
+SELECT 
+    u.id_usuario,
+    u.username,
+    u.email,
+    r.nombre as rol,
+    tp.id_tarea,
+    tp.tipo_tarea,
+    tp.descripcion,
+    tp.prioridad,
+    tp.created_at,
+    DATEDIFF(DAY, tp.created_at, GETDATE()) as dias_pendiente,
+    CASE tp.tipo_tarea
+        WHEN 'ASIGNAR_PRECIO' THEN 'Pendiente de asignar precio'
+        WHEN 'APROBAR_LOTE' THEN 'Pendiente de aprobación de calidad'
+        WHEN 'STOCK_BAJO' THEN 'Stock bajo - requiere reposición'
+        ELSE tp.tipo_tarea
+    END as descripcion_tarea
+FROM USUARIO u
+INNER JOIN ROL r ON u.id_rol = r.id_rol
+INNER JOIN TAREA_PENDIENTE tp ON r.id_rol = tp.id_rol_asignado
+WHERE tp.estado = 'PENDIENTE' AND u.activo = 1;
+
+-- Vista: Lotes con estado detallado
+CREATE VIEW VW_LotesEstadoDetallado AS
+SELECT 
+    l.id_lote,
+    l.lote,
+    i.nombre as insumo,
+    l.ubicacion,
+    l.stock_inicial,
+    l.stock_actual,
+    (l.stock_inicial - l.stock_actual) as stock_consumido,
+    CASE 
+        WHEN l.stock_actual <= 0 THEN 'AGOTADO'
+        WHEN l.stock_actual <= (l.stock_inicial * 0.1) THEN 'STOCK_CRITICO'
+        WHEN l.stock_actual <= (l.stock_inicial * 0.2) THEN 'STOCK_BAJO'
+        ELSE 'STOCK_NORMAL'
+    END as estado_stock,
+    l.fecha_expiracion,
+    CASE 
+        WHEN l.fecha_expiracion < GETDATE() THEN 'VENCIDO'
+        WHEN l.fecha_expiracion < DATEADD(DAY, 30, GETDATE()) THEN 'PROXIMO_VENCER'
+        ELSE 'VIGENTE'
+    END as estado_vigencia,
+    l.precio_total,
+    CASE 
+        WHEN l.precio_total IS NULL THEN 'PENDIENTE_PRECIO'
+        ELSE 'PRECIO_ASIGNADO'
+    END as estado_precio,
+    COALESCE(l.estado_lote, 'PENDIENTE_APROBACION') as estado_lote
+FROM LOTE l
+INNER JOIN INSUMO i ON l.id_insumo = i.id_insumo;
+
 GO 
+
+-- ========================================
+-- COMENTARIOS EXPLICATIVOS
+-- ========================================
+
+/*
+EXPLICACIÓN DEL MODELO DE STOCK:
+
+1. LOTE es la tabla PRINCIPAL para el inventario:
+   - stock_inicial: Cantidad que ingresó originalmente
+   - stock_actual: Cantidad disponible ahora (se actualiza automáticamente)
+
+2. STOCK es para historial de movimientos (OPCIONAL):
+   - cantidad: Registra movimiento individual
+   - Se puede usar para auditoría de movimientos
+
+3. CONSUMO actualiza automáticamente LOTE.stock_actual via trigger
+
+4. FLUJO AUTOMÁTICO:
+   - Se crea LOTE → Se generan tareas para LABORATORISTA y COMERCIAL
+   - Se registra CONSUMO → Se descuenta de LOTE.stock_actual
+   - Stock bajo → Se genera alerta para SUPERVISOR
+   - Sin precio → Tarea pendiente para COMERCIAL
+   - Sin aprobar → Tarea pendiente para LABORATORISTA
+
+5. Las vistas permiten consultas optimizadas del stock actual
+*/ 
